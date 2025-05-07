@@ -18,15 +18,17 @@ Usage:
    export N8N_API_KEY='your-api-key-here'
 
 2. Run the script:
-   python upload_credentials_and_workflows_to_n8n.py
+   python upload_credentials_and_workflows_to_n8n.py --credentials ./backups/credentials.json --workflows ./backups/workflows.json
 
 The script will:
-- Ask if you want to wipe existing credentials and workflows
-- If yes, delete all existing credentials and workflows
+- Ask if you want to wipe existing workflows
+- If yes, delete all existing workflows
 - Import credentials from credentials.json
 - Import workflows from workflows.json
 
-Note: Make sure your API key has sufficient permissions to perform these operations.
+Note: 
+- Make sure your API key has sufficient permissions to perform these operations.
+- The n8n REST API does not allow listing credentials, so we cannot wipe existing credentials.
 """
 
 N8N_URL = "https://voicecontroller.app.n8n.cloud"
@@ -41,27 +43,51 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-def wipe_existing_credentials():
-    response = requests.get(f"{N8N_URL}/api/v1/credentials", headers=HEADERS)
-    if response.status_code == 200:
-        credentials = response.json()['data']  # Access the credentials through the 'data' key
-        for credential in credentials:
-            delete_response = requests.delete(
-                f"{N8N_URL}/api/v1/credentials/{credential['id']}", 
-                headers=HEADERS
-            )
-            print(f"Deleting credential {credential.get('name')}: {delete_response.status_code}")
-
 def wipe_existing_workflows():
+    """Wipes all existing workflows from the n8n instance"""
+    print("\nFetching existing workflows...")
+    
+    # First get all workflows
     response = requests.get(f"{N8N_URL}/api/v1/workflows", headers=HEADERS)
-    if response.status_code == 200:
-        workflows = response.json()
-        for workflow in workflows['data']:  # Access the workflows through the 'data' key
-            delete_response = requests.delete(
-                f"{N8N_URL}/api/v1/workflows/{workflow['id']}", 
+    if response.status_code != 200:
+        print(f"Failed to get workflows: {response.status_code}")
+        print(f"Response body: {response.text}")
+        print("Please check that your API key has sufficient permissions")
+        print(f"Using N8N URL: {N8N_URL}")
+        return
+        
+    workflows = response.json()
+    if not isinstance(workflows, dict) or 'data' not in workflows:
+        print("Unexpected response format when getting workflows")
+        print(f"Response: {workflows}")
+        return
+        
+    # First deactivate all active workflows
+    for workflow in workflows['data']:
+        if workflow.get('active'):
+            deactivate_response = requests.post(
+                f"{N8N_URL}/api/v1/workflows/{workflow['id']}/deactivate",
                 headers=HEADERS
             )
-            print(f"Deleting workflow {workflow.get('name')}: {delete_response.status_code}")
+            if deactivate_response.status_code != 200:
+                print(f"Failed to deactivate workflow {workflow.get('name')}: {deactivate_response.status_code}")
+    
+    # Then delete each workflow
+    for workflow in workflows['data']:
+        if 'id' not in workflow:
+            print(f"Workflow missing ID: {workflow}")
+            continue
+            
+        delete_response = requests.delete(
+            f"{N8N_URL}/api/v1/workflows/{workflow['id']}", 
+            headers=HEADERS
+        )
+        
+        if delete_response.status_code == 200:
+            print(f"Successfully deleted workflow {workflow.get('name')} (ID: {workflow['id']})")
+        else:
+            print(f"Failed to delete workflow {workflow.get('name')} (ID: {workflow['id']}): {delete_response.status_code}")
+            print(delete_response.text)
 
 def import_credentials(credentials_path):
     with open(credentials_path) as f:
@@ -112,11 +138,10 @@ def import_workflows(workflows_path):
             print(response.text)
 
 if __name__ == "__main__":
-    should_wipe = input("Do you want to wipe existing credentials and workflows? (y/N): ").lower() == 'y'
+    should_wipe = input("Do you want to wipe existing workflows? (y/N): ").lower() == 'y'
     
     if should_wipe:
-        print("Wiping existing credentials and workflows...")
-        wipe_existing_credentials()
+        print("Wiping existing workflows...")
         wipe_existing_workflows()
 
     parser = argparse.ArgumentParser(description='Import n8n credentials and workflows')
@@ -126,5 +151,7 @@ if __name__ == "__main__":
                       help='Path to workflows JSON file (default: workflows.json)')
     args = parser.parse_args()
 
+    print("Importing credentials...")
     import_credentials(args.credentials)
+    print("Importing workflows...")
     import_workflows(args.workflows)
